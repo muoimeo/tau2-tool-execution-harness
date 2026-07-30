@@ -1,0 +1,18 @@
+{
+  "schema_version": "har04-schema-domain-fixtures/v1",
+  "clean": [
+    {"case_id": "valid_read_no_args", "tool_name": "list_all_product_types", "arguments": {}},
+    {"case_id": "valid_read_with_args", "tool_name": "get_order_details", "arguments": {"order_id": "#W0000000"}},
+    {"case_id": "valid_write", "tool_name": "cancel_pending_order", "arguments": {"order_id": "#W0000000", "reason": "customer request"}},
+    {"case_id": "valid_multi_argument", "tool_name": "modify_pending_order_items", "arguments": {"order_id": "#W0000000", "item_ids": ["old-1"], "new_item_ids": ["new-1"], "payment_method_id": "credit_card_0000000"}},
+    {"case_id": "valid_modify_old_ne_new", "tool_name": "modify_pending_order_items", "arguments": {"order_id": "#W0000000", "item_ids": ["old-1", "old-2"], "new_item_ids": ["new-1", "new-2"], "payment_method_id": "credit_card_0000000"}}
+  ],
+  "invalid": [
+    {"case_id": "missing_required", "tool_name": "get_order_details", "arguments": {}, "failure_code": "SCHEMA_MISSING_REQUIRED_ARG"},
+    {"case_id": "extra_argument", "tool_name": "get_order_details", "arguments": {"order_id": "#W0000000", "unexpected": true}, "failure_code": "SCHEMA_EXTRA_ARGUMENT"},
+    {"case_id": "wrong_scalar_type", "tool_name": "get_order_details", "arguments": {"order_id": 2}, "failure_code": "SCHEMA_WRONG_ARG_TYPE"},
+    {"case_id": "null_required_non_null", "tool_name": "get_order_details", "arguments": {"order_id": null}, "failure_code": "SCHEMA_WRONG_ARG_TYPE"},
+    {"case_id": "same_old_new_item", "tool_name": "modify_pending_order_items", "arguments": {"order_id": "#W0000000", "item_ids": ["same"], "new_item_ids": ["same"], "payment_method_id": "credit_card_0000000"}, "failure_code": "DOMAIN_CONSTRAINT_VIOLATION"}
+  ],
+  "native_nested_case_available": false
+}

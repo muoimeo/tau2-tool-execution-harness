@@ -1,0 +1,19 @@
+{
+  "schema_version": "parser-fixtures/v1",
+  "cases": [
+    {
+      "case_id": "valid_object",
+      "raw_calls": [{"provider_call_id": "call-1", "raw_tool_name": "get_order_details", "raw_arguments_text": "{ \"order_id\" : \"#W0000000\" }"}],
+      "expected": {"requests": 1, "failures": 0}
+    },
+    {
+      "case_id": "multiple_malformed_calls",
+      "raw_calls": [
+        {"provider_call_id": "bad-1", "raw_tool_name": "get_order_details", "raw_arguments_text": "{\"order_id\":"},
+        {"provider_call_id": "call-2", "raw_tool_name": "get_order_details", "raw_arguments_text": "{\"order_id\":\"#W0000000\"}"},
+        {"provider_call_id": "bad-2", "raw_tool_name": "get_order_details", "raw_arguments_text": "[\"#W0000000\"]"}
+      ],
+      "expected": {"requests": 1, "failures": 2, "failure_ordinals": [0, 1]}
+    }
+  ]
+}

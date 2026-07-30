@@ -9,6 +9,7 @@ from loguru import logger
 
 from tau2.agent.base import BaseAgent, is_valid_agent_history_message
 from tau2.agent.llm_agent import LLMSoloAgent
+from tau2.agent.llm_agent import LLMAgent
 from tau2.data_model.message import (
     AssistantMessage,
     Message,
@@ -19,6 +20,9 @@ from tau2.data_model.message import (
 from tau2.data_model.simulation import SimulationRun, TerminationReason
 from tau2.data_model.tasks import EnvFunctionCall, InitializationData, Task
 from tau2.environment.environment import Environment, EnvironmentInfo
+from tau2.harness.contracts import Requestor
+from tau2.harness.episode import EpisodeHarness
+from tau2.harness.runtime import HarnessRuntimeBridge
 from tau2.user.base import BaseUser, is_valid_user_history_message
 from tau2.user.user_simulator import DummyUser, UserSimulator, UserState
 from tau2.utils.llm_utils import get_cost
@@ -53,6 +57,7 @@ class Orchestrator:
         max_errors: int = 10,
         seed: Optional[int] = None,
         solo_mode: bool = False,
+        harness: Optional[EpisodeHarness] = None,
     ):
         self.domain = domain
         self.agent = agent
@@ -73,6 +78,46 @@ class Orchestrator:
         self.from_role: Optional[Role] = None
         self.to_role: Optional[Role] = None
         self.message: Optional[Message] = None
+        self.harness = harness
+        self._harness_runtime: Optional[HarnessRuntimeBridge] = None
+        self._harness_pending_agent_context = None
+        if isinstance(self.agent, LLMAgent) and self.agent.harness_parser_enabled and harness is None:
+            raise ValueError("harness parser is enabled but no execution bridge is bound")
+        if harness is not None:
+            if harness.environment is not environment:
+                raise ValueError("harness episode must bind this exact Environment instance")
+            if str(harness.identity.task_id) != str(task.id):
+                raise ValueError("harness episode task ID does not match orchestrator task")
+            if seed is not None and seed != harness.identity.trial_seed:
+                raise ValueError("harness episode seed does not match orchestrator seed")
+            if not isinstance(self.agent, LLMAgent):
+                raise ValueError("HAR-07C supports LLMAgent only")
+            self._harness_runtime = HarnessRuntimeBridge(harness)
+            try:
+                self._harness_runtime.preflight()
+            except BaseException:
+                # Constructor failures occur before run()'s finally block.
+                # Close only best-effort resources and retain the telemetry
+                # exception as the primary supervisor-visible failure.
+                try:
+                    harness.close_resources()
+                except Exception as cleanup_error:
+                    logger.error(f"HAR-07D preflight cleanup failure: {cleanup_error}")
+                raise
+
+            def context_supplier():
+                context = harness.context_for_turn(
+                    turn_index=self.step_count, requestor=Requestor.ASSISTANT
+                )
+                self._harness_pending_agent_context = context
+                return context
+
+            self.agent.enable_harness_parser(
+                context_supplier=context_supplier,
+                sidecar_supplier=lambda context: harness.parser_failure_sidecar(
+                    turn_index=context.turn_index, requestor=context.requestor
+                ),
+            )
 
     def initialize(self):
         """
@@ -250,15 +295,29 @@ class Orchestrator:
         """
         start_time = get_now()
         start = time.perf_counter()
-        self.initialize()
-        while not self.done:
-            self.step()
-            if self.step_count >= self.max_steps:
-                self.done = True
-                self.termination_reason = TerminationReason.MAX_STEPS
-            if self.num_errors >= self.max_errors:
-                self.done = True
-                self.termination_reason = TerminationReason.TOO_MANY_ERRORS
+        primary_error: BaseException | None = None
+        try:
+            self.initialize()
+            while not self.done:
+                self.step()
+                if self.step_count >= self.max_steps:
+                    self.done = True
+                    self.termination_reason = TerminationReason.MAX_STEPS
+                if self.num_errors >= self.max_errors:
+                    self.done = True
+                    self.termination_reason = TerminationReason.TOO_MANY_ERRORS
+            self._close_harness_lifecycle()
+        except BaseException as exc:
+            primary_error = exc
+            self._mark_harness_operational_failure(exc)
+            raise
+        finally:
+            try:
+                self._teardown_harness()
+            except Exception as cleanup_error:
+                logger.error(f"HAR-07D cleanup failure: {cleanup_error}")
+                if primary_error is None:
+                    raise
         duration = time.perf_counter() - start
         messages = self.get_trajectory()
         res = get_cost(messages)
@@ -336,8 +395,16 @@ class Orchestrator:
                 raise ValueError("Agent or User should send tool call to environment")
             tool_msgs = []
             for tool_call in self.message.tool_calls:
-                tool_msg = self.environment.get_response(tool_call)
+                if self._harness_runtime is not None and self.from_role == Role.AGENT:
+                    if self._harness_pending_agent_context is None:
+                        raise RuntimeError("harness execution bridge has no agent turn context")
+                    tool_msg = self._harness_runtime.execute_assistant_call(
+                        tool_call, context=self._harness_pending_agent_context
+                    )
+                else:
+                    tool_msg = self.environment.get_response(tool_call)
                 tool_msgs.append(tool_msg)
+            self._harness_pending_agent_context = None
             assert len(self.message.tool_calls) == len(tool_msgs), (
                 "Number of tool calls and tool messages should be the same"
             )
@@ -359,6 +426,43 @@ class Orchestrator:
             )
         self.step_count += 1
         self.environment.sync_tools()
+
+    def _teardown_harness(self) -> None:
+        if self.harness is not None:
+            self.harness.close_resources()
+        if isinstance(self.agent, LLMAgent):
+            self.agent.disable_harness_parser()
+        self._harness_pending_agent_context = None
+
+    def _close_harness_lifecycle(self) -> None:
+        if self.harness is None:
+            return
+        trace_sha256, event_count, last_sequence = self.harness.trace_logger.summary()
+        self.harness.lifecycle = self.harness.lifecycle_store.close(
+            trace_sha256=trace_sha256,
+            trace_event_count=event_count,
+            trace_last_sequence=last_sequence,
+            outcome="succeeded",
+        )
+
+    def _mark_harness_operational_failure(self, error: BaseException) -> None:
+        if self.harness is None:
+            return
+        try:
+            lifecycle = self.harness.lifecycle_store.read()
+            if lifecycle.status.value != "open":
+                return
+            from tau2.harness.integration_contracts import EpisodeLifecycle, LifecycleStatus
+            self.harness.lifecycle_store.write(EpisodeLifecycle(
+                identity=self.harness.identity,
+                status=LifecycleStatus.FAILED_OPERATIONAL,
+                trace_filename=lifecycle.trace_filename,
+                side_effect_may_have_occurred=False,
+                operational_failure=f"{type(error).__name__}: {error}",
+                final_operational_outcome="failed",
+            ))
+        except Exception as lifecycle_error:
+            logger.error(f"HAR-07D lifecycle failure reporting failed: {lifecycle_error}")
 
     def get_trajectory(self) -> list[Message]:
         """

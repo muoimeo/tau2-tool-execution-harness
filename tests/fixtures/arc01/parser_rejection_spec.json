@@ -1,0 +1,71 @@
+{
+  "schema_version": "parser-rejection-spec/v2",
+  "synthetic_call_id": {
+    "algorithm": "sha256",
+    "prefix": "hparse_",
+    "hex_characters": 32,
+    "canonical_utf8_template": "toolcall-parse-v2\\u0000{run_id}\\u0000{turn_index}\\u0000{malformed_call_ordinal}\\u0000{provider_call_id_or_empty}\\u0000{requestor}\\u0000{raw_tool_name_or_empty}\\u0000{raw_arguments_text_or_empty}"
+  },
+  "cases": [
+    {
+      "case_id": "malformed_json",
+      "input": {
+        "run_id": "a1fx-r0",
+        "turn_index": 0,
+        "malformed_call_ordinal": 0,
+        "expected_requestor": "assistant",
+        "provider_call_id": "provider-parse-001",
+        "raw_tool_name": "get_order_details",
+        "raw_arguments_text": "{\"order_id\":"
+      },
+      "expected": {
+        "source_kind": "synthetic_parser_rejection",
+        "failure_code": "PARSE_MALFORMED_JSON",
+        "synthetic_call_id": "hparse_f427dd28fb314c303c1ed8c9468fbcfd",
+        "requestor": "assistant",
+        "dispatch_attempted": false,
+        "native_dispatch_allowed": false
+      }
+    },
+    {
+      "case_id": "arguments_not_object",
+      "input": {
+        "run_id": "a1fx-r0",
+        "turn_index": 1,
+        "malformed_call_ordinal": 0,
+        "expected_requestor": "assistant",
+        "provider_call_id": "provider-parse-002",
+        "raw_tool_name": "get_order_details",
+        "raw_arguments_text": "[\"#W0000000\"]"
+      },
+      "expected": {
+        "source_kind": "synthetic_parser_rejection",
+        "failure_code": "PARSE_ARGUMENTS_NOT_OBJECT",
+        "synthetic_call_id": "hparse_5a813a01ac82b100be4e53867c083232",
+        "requestor": "assistant",
+        "dispatch_attempted": false,
+        "native_dispatch_allowed": false
+      }
+    },
+    {
+      "case_id": "invalid_response_structure_without_call_id",
+      "input": {
+        "run_id": "a1fx-r0",
+        "turn_index": 2,
+        "malformed_call_ordinal": 0,
+        "expected_requestor": "assistant",
+        "provider_call_id": "",
+        "raw_tool_name": "",
+        "raw_arguments_text": ""
+      },
+      "expected": {
+        "source_kind": "synthetic_parser_rejection",
+        "failure_code": "PARSE_RESPONSE_STRUCTURE_INVALID",
+        "synthetic_call_id": "hparse_dfca75394e59e59ba9f4ace565acf695",
+        "requestor": "assistant",
+        "dispatch_attempted": false,
+        "native_dispatch_allowed": false
+      }
+    }
+  ]
+}

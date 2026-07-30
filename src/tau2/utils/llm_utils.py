@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import litellm
@@ -29,6 +30,11 @@ from tau2.data_model.message import (
     UserMessage,
 )
 from tau2.environment.tool import Tool
+from tau2.harness.integration_contracts import (
+    OrchestratedHarnessContext,
+    ParserFailureSidecar,
+)
+from tau2.harness.scoped_parser import parse_orchestrated_provider_tool_calls
 
 # litellm._turn_on_debug()
 
@@ -182,6 +188,8 @@ def generate(
     messages: list[Message],
     tools: Optional[list[Tool]] = None,
     tool_choice: Optional[str] = None,
+    harness_context: OrchestratedHarnessContext | None = None,
+    parser_failure_sidecar: ParserFailureSidecar | None = None,
     **kwargs: Any,
 ) -> UserMessage | AssistantMessage:
     """
@@ -230,15 +238,28 @@ def generate(
         "The response should be an assistant message"
     )
     content = response.message.content
-    tool_calls = response.message.tool_calls or []
-    tool_calls = [
-        ToolCall(
-            id=tool_call.id,
-            name=tool_call.function.name,
-            arguments=json.loads(tool_call.function.arguments),
+    raw_tool_calls = response.message.tool_calls or []
+    if harness_context is None:
+        if parser_failure_sidecar is not None:
+            raise ValueError("parser_failure_sidecar requires harness_context")
+        # Native path deliberately remains byte-for-byte equivalent in behavior.
+        tool_calls = [
+            ToolCall(
+                id=tool_call.id,
+                name=tool_call.function.name,
+                arguments=json.loads(tool_call.function.arguments),
+            )
+            for tool_call in raw_tool_calls
+        ]
+    else:
+        if parser_failure_sidecar is None:
+            raise ValueError("harness_context requires parser_failure_sidecar")
+        tool_calls, _ = parse_orchestrated_provider_tool_calls(
+            raw_tool_calls,
+            context=harness_context,
+            sidecar=parser_failure_sidecar,
+            parsed_at=datetime.now(timezone.utc),
         )
-        for tool_call in tool_calls
-    ]
     tool_calls = tool_calls or None
 
     message = AssistantMessage(

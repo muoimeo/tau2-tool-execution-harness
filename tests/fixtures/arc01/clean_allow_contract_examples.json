@@ -1,0 +1,49 @@
+{
+  "schema_version": "clean-allow-contract-examples/v1",
+  "cases": [
+    {
+      "case_id": "read_allow_preserves_arguments",
+      "request": {
+        "logical_call_id": "fixture-read-001",
+        "requestor": "assistant",
+        "tool_name": "get_order_details",
+        "arguments": {
+          "order_id": "#W0000000"
+        }
+      },
+      "expected_validation": {
+        "decision": "allow",
+        "arguments_unchanged": true
+      },
+      "expected_dispatch": {
+        "dispatch_attempted": true,
+        "dispatch_count": 1,
+        "native_arguments_equal_request_arguments": true
+      }
+    },
+    {
+      "case_id": "write_allow_uses_one_native_dispatch",
+      "request": {
+        "logical_call_id": "fixture-write-001",
+        "requestor": "assistant",
+        "tool_name": "modify_pending_order_items",
+        "arguments": {
+          "order_id": "#W0000000",
+          "item_ids": ["111"],
+          "new_item_ids": ["222"],
+          "payment_method_id": "paypal_000"
+        }
+      },
+      "expected_validation": {
+        "decision": "allow",
+        "arguments_unchanged": true,
+        "constraint_id": "retail.modify_pending_order_items.old_new_distinct.v1"
+      },
+      "expected_dispatch": {
+        "dispatch_attempted": true,
+        "dispatch_count": 1,
+        "native_arguments_equal_request_arguments": true
+      }
+    }
+  ]
+}

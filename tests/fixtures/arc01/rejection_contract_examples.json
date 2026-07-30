@@ -1,0 +1,98 @@
+{
+  "schema_version": "rejection-contract-examples/v1",
+  "canonical_tool_message_template": "Error: A1 validation rejected tool call [<CODE>].",
+  "cases": [
+    {
+      "case_id": "parser_reject_is_tool_compatible",
+      "request": {
+        "logical_call_id": "hparse_85061902cc0b4a347d032048dcc93ab6",
+        "source_kind": "synthetic_parser_rejection",
+        "requestor": "assistant",
+        "tool_name": "get_order_details"
+      },
+      "validation_result": {
+        "decision": "reject",
+        "failed_stage": "parse",
+        "failure_code": "PARSE_MALFORMED_JSON",
+        "arguments_unchanged": true
+      },
+      "dispatch_result": {
+        "dispatch_attempted": false,
+        "dispatch_count": 0,
+        "status": "not_dispatched"
+      },
+      "tool_message": {
+        "id": "hparse_85061902cc0b4a347d032048dcc93ab6",
+        "role": "tool",
+        "requestor": "assistant",
+        "error": true,
+        "content": "Error: A1 validation rejected tool call [PARSE_MALFORMED_JSON]."
+      }
+    },
+    {
+      "case_id": "extra_argument_reject",
+      "request": {
+        "logical_call_id": "fixture-extra-001",
+        "source_kind": "parsed_provider_call",
+        "requestor": "assistant",
+        "tool_name": "get_order_details",
+        "arguments": {
+          "order_id": "#W0000000",
+          "unexpected": true
+        }
+      },
+      "validation_result": {
+        "decision": "reject",
+        "failed_stage": "schema",
+        "failure_code": "SCHEMA_EXTRA_ARG",
+        "arguments_unchanged": true
+      },
+      "dispatch_result": {
+        "dispatch_attempted": false,
+        "dispatch_count": 0,
+        "status": "not_dispatched"
+      },
+      "tool_message": {
+        "id": "fixture-extra-001",
+        "role": "tool",
+        "requestor": "assistant",
+        "error": true,
+        "content": "Error: A1 validation rejected tool call [SCHEMA_EXTRA_ARG]."
+      }
+    },
+    {
+      "case_id": "explicit_domain_constraint_reject",
+      "request": {
+        "logical_call_id": "fixture-domain-001",
+        "source_kind": "parsed_provider_call",
+        "requestor": "assistant",
+        "tool_name": "modify_pending_order_items",
+        "arguments": {
+          "order_id": "#W0000000",
+          "item_ids": ["111"],
+          "new_item_ids": ["111"],
+          "payment_method_id": "paypal_000"
+        }
+      },
+      "validation_result": {
+        "decision": "reject",
+        "failed_stage": "domain_constraint",
+        "failure_code": "SCHEMA_CONSTRAINT_VIOLATION",
+        "constraint_id": "retail.modify_pending_order_items.old_new_distinct.v1",
+        "arguments_unchanged": true
+      },
+      "dispatch_result": {
+        "dispatch_attempted": false,
+        "dispatch_count": 0,
+        "status": "not_dispatched"
+      },
+      "tool_message": {
+        "id": "fixture-domain-001",
+        "role": "tool",
+        "requestor": "assistant",
+        "error": true,
+        "content": "Error: A1 validation rejected tool call [SCHEMA_CONSTRAINT_VIOLATION]."
+      }
+    }
+  ]
+}

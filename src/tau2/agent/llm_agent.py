@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from loguru import logger
 from pydantic import BaseModel
@@ -19,6 +19,10 @@ from tau2.data_model.message import (
 )
 from tau2.data_model.tasks import Action, Task
 from tau2.environment.tool import Tool, as_tool
+from tau2.harness.integration_contracts import (
+    OrchestratedHarnessContext,
+    ParserFailureSidecar,
+)
 from tau2.utils.llm_utils import generate
 
 AGENT_INSTRUCTION = """
@@ -66,6 +70,30 @@ class LLMAgent(LocalAgent[LLMAgentState]):
         super().__init__(tools=tools, domain_policy=domain_policy)
         self.llm = llm
         self.llm_args = deepcopy(llm_args) if llm_args is not None else {}
+        self._harness_parser_context_supplier: Optional[
+            Callable[[], OrchestratedHarnessContext]
+        ] = None
+        self._harness_parser_sidecar_supplier: Optional[
+            Callable[[OrchestratedHarnessContext], ParserFailureSidecar]
+        ] = None
+
+    def enable_harness_parser(
+        self,
+        *,
+        context_supplier: Callable[[], OrchestratedHarnessContext],
+        sidecar_supplier: Callable[[OrchestratedHarnessContext], ParserFailureSidecar],
+    ) -> None:
+        """Opt in only this orchestrated LLMAgent instance to HAR-03 parsing."""
+        self._harness_parser_context_supplier = context_supplier
+        self._harness_parser_sidecar_supplier = sidecar_supplier
+
+    def disable_harness_parser(self) -> None:
+        self._harness_parser_context_supplier = None
+        self._harness_parser_sidecar_supplier = None
+
+    @property
+    def harness_parser_enabled(self) -> bool:
+        return self._harness_parser_context_supplier is not None
 
     @property
     def system_prompt(self) -> str:
@@ -105,12 +133,20 @@ class LLMAgent(LocalAgent[LLMAgentState]):
         else:
             state.messages.append(message)
         messages = state.system_messages + state.messages
-        assistant_message = generate(
-            model=self.llm,
-            tools=self.tools,
-            messages=messages,
-            **self.llm_args,
-        )
+        if self._harness_parser_context_supplier is None:
+            assistant_message = generate(
+                model=self.llm, tools=self.tools, messages=messages, **self.llm_args,
+            )
+        else:
+            if self._harness_parser_sidecar_supplier is None:
+                raise RuntimeError("LLMAgent harness parser configuration is incomplete")
+            context = self._harness_parser_context_supplier()
+            sidecar = self._harness_parser_sidecar_supplier(context)
+            assistant_message = generate(
+                model=self.llm, tools=self.tools, messages=messages,
+                harness_context=context, parser_failure_sidecar=sidecar,
+                **self.llm_args,
+            )
         state.messages.append(assistant_message)
         return assistant_message, state
 

@@ -1,0 +1,10 @@
+{
+  "schema_version": "registry-validation-fixtures/v1",
+  "fixtures": [
+    {"case_id": "valid_agent_tool", "requestor": "assistant", "tool_name": "agent_lookup", "expected": {"allowed": true, "passed_stages": ["requestor", "registry"]}},
+    {"case_id": "valid_user_tool", "requestor": "user", "tool_name": "user_lookup", "expected": {"allowed": true, "passed_stages": ["requestor", "registry"]}},
+    {"case_id": "unknown_tool", "requestor": "assistant", "tool_name": "does_not_exist", "expected": {"allowed": false, "failed_stage": "registry", "failure_code": "REGISTRY_UNKNOWN_TOOL"}},
+    {"case_id": "wrong_requestor", "requestor": "assistant", "tool_name": "user_lookup", "expected": {"allowed": false, "failed_stage": "registry", "failure_code": "REGISTRY_WRONG_REQUESTOR"}},
+    {"case_id": "trusted_route_mismatch", "requestor": "user", "tool_name": "user_lookup", "trusted_requestor": "assistant", "expected": {"allowed": false, "failed_stage": "requestor", "failure_code": "REGISTRY_WRONG_REQUESTOR"}}
+  ]
+}
