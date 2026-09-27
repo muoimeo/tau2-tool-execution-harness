@@ -118,6 +118,12 @@ class Orchestrator:
                     turn_index=context.turn_index, requestor=context.requestor
                 ),
             )
+            if harness.a3_repairer is not None and harness.a3_recovery_audit is not None:
+                self.agent.enable_a3_recovery(
+                    repairer_supplier=lambda _context: harness.a3_repairer,
+                    recovery_audit_supplier=lambda _context: harness.a3_recovery_audit,
+                    repair_lineage_supplier=lambda _context: harness.a3_repair_lineage,
+                )
 
     def initialize(self):
         """
@@ -306,7 +312,6 @@ class Orchestrator:
                 if self.num_errors >= self.max_errors:
                     self.done = True
                     self.termination_reason = TerminationReason.TOO_MANY_ERRORS
-            self._close_harness_lifecycle()
         except BaseException as exc:
             primary_error = exc
             self._mark_harness_operational_failure(exc)
@@ -432,18 +437,8 @@ class Orchestrator:
             self.harness.close_resources()
         if isinstance(self.agent, LLMAgent):
             self.agent.disable_harness_parser()
+            self.agent.disable_a3_recovery()
         self._harness_pending_agent_context = None
-
-    def _close_harness_lifecycle(self) -> None:
-        if self.harness is None:
-            return
-        trace_sha256, event_count, last_sequence = self.harness.trace_logger.summary()
-        self.harness.lifecycle = self.harness.lifecycle_store.close(
-            trace_sha256=trace_sha256,
-            trace_event_count=event_count,
-            trace_last_sequence=last_sequence,
-            outcome="succeeded",
-        )
 
     def _mark_harness_operational_failure(self, error: BaseException) -> None:
         if self.harness is None:
@@ -452,15 +447,11 @@ class Orchestrator:
             lifecycle = self.harness.lifecycle_store.read()
             if lifecycle.status.value != "open":
                 return
-            from tau2.harness.integration_contracts import EpisodeLifecycle, LifecycleStatus
-            self.harness.lifecycle_store.write(EpisodeLifecycle(
-                identity=self.harness.identity,
-                status=LifecycleStatus.FAILED_OPERATIONAL,
-                trace_filename=lifecycle.trace_filename,
-                side_effect_may_have_occurred=False,
-                operational_failure=f"{type(error).__name__}: {error}",
-                final_operational_outcome="failed",
-            ))
+            from tau2.harness.integration_contracts import LifecycleStatus
+            self.harness.lifecycle_store.terminalize(
+                lifecycle, status=LifecycleStatus.FAILED_OPERATIONAL,
+                outcome="failed", error=f"{type(error).__name__}: {error}", side_effect=False,
+            )
         except Exception as lifecycle_error:
             logger.error(f"HAR-07D lifecycle failure reporting failed: {lifecycle_error}")
 

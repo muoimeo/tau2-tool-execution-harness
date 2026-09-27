@@ -10,6 +10,12 @@ dump.rdb
 logs/
 data/simulations/
 
+# Local analysis scratch and generated repository snapshot.
+/analysis/tmp_*.txt
+/analysis/A0_A2_METRIC_MATRIX.md
+/tau2-bench.xml
+/A0_A2_harness_metric_matrix.xlsx
+
 .ruff_cache
 
 # Byte-compiled / optimized / DLL files

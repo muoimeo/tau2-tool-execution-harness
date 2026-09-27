@@ -23,6 +23,7 @@ from tau2.harness.integration_contracts import (
     OrchestratedHarnessContext,
     ParserFailureSidecar,
 )
+from tau2.harness.retry import ProviderGenerationRetryController
 from tau2.utils.llm_utils import generate
 
 AGENT_INSTRUCTION = """
@@ -76,6 +77,28 @@ class LLMAgent(LocalAgent[LLMAgentState]):
         self._harness_parser_sidecar_supplier: Optional[
             Callable[[OrchestratedHarnessContext], ParserFailureSidecar]
         ] = None
+        self._provider_retry_controller_supplier: Optional[Callable[[OrchestratedHarnessContext], ProviderGenerationRetryController]] = None
+        self._a3_repairer_supplier = None
+        self._a3_recovery_audit_supplier = None
+        self._a3_repair_lineage_supplier = None
+
+    def enable_a2_provider_retry(self, supplier: Callable[[OrchestratedHarnessContext], ProviderGenerationRetryController]) -> None:
+        """Explicit A2-only generation retry; user simulators never call this."""
+        self._provider_retry_controller_supplier = supplier
+
+    def disable_a2_provider_retry(self) -> None:
+        self._provider_retry_controller_supplier = None
+
+    def enable_a3_recovery(self, repairer_supplier, recovery_audit_supplier, repair_lineage_supplier) -> None:
+        """Opt in this agent instance to A3 repair only after A1 parser failure."""
+        self._a3_repairer_supplier = repairer_supplier
+        self._a3_recovery_audit_supplier = recovery_audit_supplier
+        self._a3_repair_lineage_supplier = repair_lineage_supplier
+
+    def disable_a3_recovery(self) -> None:
+        self._a3_repairer_supplier = None
+        self._a3_recovery_audit_supplier = None
+        self._a3_repair_lineage_supplier = None
 
     def enable_harness_parser(
         self,
@@ -142,9 +165,17 @@ class LLMAgent(LocalAgent[LLMAgentState]):
                 raise RuntimeError("LLMAgent harness parser configuration is incomplete")
             context = self._harness_parser_context_supplier()
             sidecar = self._harness_parser_sidecar_supplier(context)
+            controller = self._provider_retry_controller_supplier(context) if self._provider_retry_controller_supplier else None
+            repairer = self._a3_repairer_supplier(context) if self._a3_repairer_supplier else None
+            recovery_audit = self._a3_recovery_audit_supplier(context) if self._a3_recovery_audit_supplier else None
+            repair_lineage = self._a3_repair_lineage_supplier(context) if self._a3_repair_lineage_supplier else None
             assistant_message = generate(
                 model=self.llm, tools=self.tools, messages=messages,
                 harness_context=context, parser_failure_sidecar=sidecar,
+                provider_retry_controller=controller,
+                a3_repairer=repairer,
+                a3_recovery_audit=recovery_audit,
+                a3_repair_lineage=repair_lineage,
                 **self.llm_args,
             )
         state.messages.append(assistant_message)

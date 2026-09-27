@@ -128,6 +128,67 @@ def add_run_args(parser):
         default=DEFAULT_LOG_LEVEL,
         help=f"The log level to use for the simulation. Default is {DEFAULT_LOG_LEVEL}.",
     )
+    parser.add_argument(
+        "--a1-harness",
+        action="store_true",
+        help="Enable the A1 validation harness. Off by default; A1 v1 requires max-concurrency 1.",
+    )
+    parser.add_argument(
+        "--a1-trace-root",
+        type=str,
+        default=None,
+        help="A1-only trace/lifecycle root relative to data/simulations, or an absolute path.",
+    )
+    parser.add_argument("--a2-retry", action="store_true", help="Enable A2 typed provider retry; requires --a1-harness.")
+    parser.add_argument("--a3-recovery", action="store_true", help="Enable A3 deterministic repair/review; requires --a1-harness and --a2-retry.")
+    parser.add_argument(
+        "--a2-max-operational-failures",
+        type=int,
+        default=3,
+        help=("A2 safe failed_operational episode-attempt budget. Its frozen scope "
+              "is selected by --a2-safe-operational-failure-scope. Default: 3."),
+    )
+    parser.add_argument(
+        "--a2-safe-operational-failure-scope",
+        choices=["global_root", "per_logical_episode"],
+        default="global_root",
+        help=("Frozen A2 supervisor scope. global_root preserves legacy runs; "
+              "per_logical_episode bounds safe failed episode attempts per task/trial."),
+    )
+    parser.add_argument(
+        "--a2-max-unsafe-manual-resumes",
+        type=int,
+        default=2,
+        help="A2-only per-task/trial cap for explicit unsafe-resume authorizations. Default: 2.",
+    )
+    parser.add_argument(
+        "--a2-authorize-unsafe-resume",
+        action="append",
+        default=[],
+        metavar="TASK:TRIAL:ATTEMPT",
+        help="One-use A2 authorization for one exact unsafe failed episode identity.",
+    )
+    parser.add_argument(
+        "--a2-authorize-no-write-resume",
+        action="append",
+        default=[],
+        metavar="TASK:TRIAL:ATTEMPT",
+        help="One-use A2 authorization only when immutable trace evidence proves no completed WRITE.",
+    )
+    parser.add_argument(
+        "--a2-declare-safe-unresolved",
+        action="append",
+        default=[],
+        metavar="TASK:TRIAL:ATTEMPT",
+        help="One-use A2 declaration that one logical episode exhausted its safe-failure budget.",
+    )
+    parser.add_argument(
+        "--a2-skip-unresolved",
+        action="append",
+        default=[],
+        metavar="TASK:TRIAL",
+        help="A2 orchestration-only skip for an unsafe logical episode whose manual-resume budget is exhausted.",
+    )
 
 
 def main():
@@ -157,6 +218,27 @@ def main():
                 max_concurrency=args.max_concurrency,
                 seed=args.seed,
                 log_level=args.log_level,
+                harness_enabled=args.a1_harness,
+                harness_trace_root=args.a1_trace_root,
+                a2_retry=args.a2_retry,
+                a3_recovery=args.a3_recovery,
+                a2_max_operational_failures=args.a2_max_operational_failures,
+                a2_safe_operational_failure_scope=args.a2_safe_operational_failure_scope,
+                a2_max_unsafe_manual_resumes=args.a2_max_unsafe_manual_resumes,
+                a2_authorize_unsafe_resume=[
+                    token
+                    for value in args.a2_authorize_unsafe_resume
+                    for token in value.split(";")
+                    if token
+                ],
+                a2_authorize_no_write_resume=[
+                    token
+                    for value in args.a2_authorize_no_write_resume
+                    for token in value.split(";")
+                    if token
+                ],
+                a2_declare_safe_unresolved=args.a2_declare_safe_unresolved,
+                a2_skip_unresolved=args.a2_skip_unresolved,
             )
         )
     )

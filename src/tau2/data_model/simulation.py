@@ -153,6 +153,47 @@ class RunConfig(BaseModel):
             default=DEFAULT_LOG_LEVEL,
         ),
     ]
+    harness_enabled: Annotated[
+        bool,
+        Field(
+            description="Enable the explicit A1 validation harness entrypoint",
+            default=False,
+        ),
+    ]
+    harness_trace_root: Annotated[
+        Optional[str],
+        Field(
+            description="A1-only trace/lifecycle directory; derived from save_to if omitted",
+            default=None,
+        ),
+    ]
+    a2_retry: bool = False
+    a3_recovery: bool = False
+    # A2-only batch-containment budget.  It is intentionally separate from
+    # native ``max_errors``, which counts in-episode tool errors.
+    a2_max_operational_failures: int = 3
+    # Frozen A2 supervisor policy.  ``global_root`` preserves legacy roots;
+    # ``per_logical_episode`` bounds safe failed *episode attempts* for one
+    # (task, trial), without stopping independent tuples.
+    a2_safe_operational_failure_scope: str = "global_root"
+    # A2-only cap on explicit human authorizations for one logical episode.
+    # It prevents an intermittent provider failure after a WRITE from causing
+    # unbounded manual reruns of the same task/trial.
+    a2_max_unsafe_manual_resumes: int = 2
+    # One-use, identity-scoped operational authorization.  It is runtime
+    # control metadata and is deliberately excluded from frozen A1/A2 config.
+    a2_authorize_unsafe_resume: list[str] = []
+    # Explicit manual rerun only when immutable trace evidence proves that no
+    # native WRITE completed. Runtime control metadata; not frozen config.
+    a2_authorize_no_write_resume: list[str] = []
+    # One-use, identity-scoped declaration that a logical episode exhausted
+    # the A2 safe-failure budget. This is orchestration metadata, not a
+    # benchmark result or frozen execution configuration.
+    a2_declare_safe_unresolved: list[str] = []
+    # Explicit orchestration/accounting control for a logical episode whose
+    # unsafe-resume budget is exhausted. This is not a benchmark result and
+    # is deliberately excluded from the frozen A1/A2 config.
+    a2_skip_unresolved: list[str] = []
 
     def validate(self) -> None:
         """

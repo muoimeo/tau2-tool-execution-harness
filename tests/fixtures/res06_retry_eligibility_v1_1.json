@@ -1,0 +1,22 @@
+{
+  "schema_version": "res06-retry-eligibility/v1.1",
+  "retryable_generation_failures": [
+    "PROVIDER_EMPTY_ASSISTANT_MESSAGE",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_HTTP_503",
+    "PROVIDER_INTERRUPTION"
+  ],
+  "non_retryable": [
+    "TOOL_DOMAIN_PRECONDITION_ERROR",
+    "HARNESS_REJECT",
+    "PARSER_REJECT",
+    "REGISTRY_REJECT",
+    "SCHEMA_REJECT",
+    "NATIVE_EXECUTION_EXCEPTION",
+    "UNKNOWN_EXECUTION_ERROR",
+    "INSUFFICIENT_EVIDENCE"
+  ],
+  "retry_boundary": "provider_generation_before_tool_dispatch",
+  "unknown_fails_closed": true,
+  "write_may_not_be_repeated_after_dispatch_starts": true
+}

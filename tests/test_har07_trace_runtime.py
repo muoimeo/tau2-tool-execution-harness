@@ -12,6 +12,7 @@ from tau2.data_model.message import AssistantMessage, UserMessage
 from tau2.environment.environment import Environment
 from tau2.environment.toolkit import ToolKitBase, ToolType, is_tool
 from tau2.harness.episode import EpisodeHarnessFactory
+from tau2.harness.entrypoint import A1RunSettings, finalize_episode_after_results_commit
 from tau2.harness.contracts import Requestor, TrustedRouteContext
 from tau2.harness.integration_contracts import LifecycleStatus
 from tau2.harness.parser import ParserNormalizer, RawToolCall
@@ -94,13 +95,23 @@ def test_logger_failure_after_read_still_marks_post_dispatch_and_propagates(tmp_
     assert harness.lifecycle_store.read().status == LifecycleStatus.FAILED_AFTER_DISPATCH
 
 
-def test_lifecycle_close_hash_count_last_sequence_and_orchestrator_failure_cleanup(tmp_path):
+def test_lifecycle_closes_only_after_results_commit_and_orchestrator_failure_cleanup(tmp_path):
     harness, environment = make_harness(tmp_path)
     bridge = HarnessRuntimeBridge(harness)
     bridge.execute_assistant_call(ToolCall(id="read", name="lookup", arguments={"key": "x"}), context=context(harness))
     agent = LLMAgent(tools=[], domain_policy="policy", llm="fake")
-    orchestrator = Orchestrator("test", agent, SimpleNamespace(), environment, SimpleNamespace(id="71"), seed=300, harness=harness)
-    orchestrator._close_harness_lifecycle()
+    _orchestrator = Orchestrator("test", agent, SimpleNamespace(), environment, SimpleNamespace(id="71"), seed=300, harness=harness)
+    # Orchestrator completion alone must not claim that evaluator/serialization
+    # completed successfully.
+    assert harness.lifecycle_store.read().status == LifecycleStatus.OPEN
+    settings = A1RunSettings.create(
+        trace_root=tmp_path, domain="test", task_ids=("71",), agent="llm_agent",
+        user="user_simulator", llm_agent="agent", llm_user="user", num_trials=1,
+        trial_seeds=(300,), max_steps=20, max_errors=2, max_concurrency=1,
+        root_seed=300, llm_args_agent={}, llm_args_user={},
+    )
+    settings.write_or_validate_config()
+    finalize_episode_after_results_commit(settings, harness.identity)
     lifecycle = harness.lifecycle_store.read()
     raw = harness.lifecycle_store.trace_path.read_bytes()
     assert lifecycle.status == LifecycleStatus.CLOSED
@@ -124,6 +135,24 @@ def test_lifecycle_close_hash_count_last_sequence_and_orchestrator_failure_clean
     cleanup_harness.close_resources = lambda: (_ for _ in ()).throw(RuntimeError("cleanup failure"))
     with pytest.raises(RuntimeError, match="primary failure"):
         cleanup.run()
+
+
+def test_failed_operational_lifecycle_snapshots_existing_trace(tmp_path):
+    harness, _environment = make_harness(tmp_path)
+    HarnessRuntimeBridge(harness).execute_assistant_call(
+        ToolCall(id="read", name="lookup", arguments={"key": "x"}), context=context(harness)
+    )
+    lifecycle = harness.lifecycle_store.read()
+    harness.lifecycle_store.terminalize(
+        lifecycle, status=LifecycleStatus.FAILED_OPERATIONAL,
+        outcome="failed", error="provider exhausted", side_effect=True,
+    )
+    raw = harness.lifecycle_store.trace_path.read_bytes()
+    terminal = harness.lifecycle_store.read()
+    assert terminal.trace_sha256 == hashlib.sha256(raw).hexdigest()
+    assert terminal.trace_event_count == len(raw.splitlines())
+    assert terminal.trace_last_sequence == len(raw.splitlines()) - 1
+    assert terminal.side_effect_may_have_occurred is True
 
 
 class UserToolkit(ToolKitBase):

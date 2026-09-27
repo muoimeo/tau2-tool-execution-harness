@@ -1,10 +1,16 @@
-"""A1 harness contracts.
+"""Execution harness package.
 
-This package intentionally has no runtime integration with the native tau2
-parser, orchestrator, environment, or gateway.
+Implementation is grouped by experiment stage:
+
+* :mod:`tau2.harness.a1` — validation, containment, tracing, and lifecycle.
+* :mod:`tau2.harness.a2` — provider retry and provider observability.
+* :mod:`tau2.harness.a3` — reserved for future recovery work.
+
+The legacy ``tau2.harness.<module>`` paths remain compatibility aliases so
+existing commands, scripts, and tests do not need an import-path migration.
 """
 
-from tau2.harness.contracts import (
+from tau2.harness.a1.contracts import (
     DispatchResult,
     DispatchStatus,
     HarnessError,
@@ -23,7 +29,7 @@ from tau2.harness.contracts import (
     canonical_json_sha256,
     synthetic_parser_rejection_id,
 )
-from tau2.harness.parser import (
+from tau2.harness.a1.parser import (
     ParserBatchResult,
     ParserBoundaryError,
     ParserFailure,
@@ -31,7 +37,7 @@ from tau2.harness.parser import (
     RawToolCall,
     SyntheticIdCollisionError,
 )
-from tau2.harness.registry import (
+from tau2.harness.a1.registry import (
     RegistryPreflightError,
     RegistrySnapshot,
     RegistryTool,
@@ -40,16 +46,16 @@ from tau2.harness.registry import (
     RequestorValidator,
     build_registry_snapshot,
 )
-from tau2.harness.validation import (
+from tau2.harness.a1.validation import (
     APPROVED_DOMAIN_CONSTRAINTS_SHA256,
     StrictSchemaDomainValidator,
 )
-from tau2.harness.dispatcher import (
+from tau2.harness.a1.dispatcher import (
     A1ValidationExecutor,
     DuplicateExecutionError,
     NativeToolExecutor,
 )
-from tau2.harness.trace import TraceInvariantError, TraceLogger, TraceLoggerError
+from tau2.harness.a1.trace import TraceInvariantError, TraceLogger, TraceLoggerError
 
 __all__ = [
     "DispatchResult",

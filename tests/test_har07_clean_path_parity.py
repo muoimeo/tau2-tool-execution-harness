@@ -10,6 +10,7 @@ from tau2.agent.llm_agent import LLMAgent
 from tau2.data_model.message import AssistantMessage, ToolCall, UserMessage
 from tau2.environment.environment import Environment
 from tau2.harness.episode import EpisodeHarnessFactory
+from tau2.harness.entrypoint import A1RunSettings, finalize_episode_after_results_commit
 from tau2.harness.integration_contracts import EpisodeIdentity, LifecycleStatus
 from tau2.orchestrator.orchestrator import Orchestrator
 from tau2.user.base import BaseUser
@@ -83,6 +84,17 @@ def run_harness(calls, trace_root):
     return simulation, harness, environments[0]
 
 
+def finalize_after_results_commit(trace_root, harness):
+    settings = A1RunSettings.create(
+        trace_root=trace_root, domain="test", task_ids=("71",), agent="llm_agent",
+        user="user_simulator", llm_agent="scripted", llm_user="scripted",
+        num_trials=1, trial_seeds=(300,), max_steps=10, max_errors=10,
+        max_concurrency=1, root_seed=300, llm_args_agent={}, llm_args_user={},
+    )
+    settings.write_or_validate_config()
+    finalize_episode_after_results_commit(settings, harness.identity)
+
+
 def visible(messages):
     rows = []
     for message in messages:
@@ -116,6 +128,10 @@ def test_native_and_harness_clean_episode_parity(calls, tmp_path):
         for call in (getattr(message, "tool_calls", None) or [])
     )
 
+    # A completed execution remains open until the caller has committed its
+    # native result row; direct orchestrator tests model that commit here.
+    assert harness.lifecycle_store.read().status == LifecycleStatus.OPEN
+    finalize_after_results_commit(tmp_path, harness)
     lifecycle = harness.lifecycle_store.read()
     raw = harness.lifecycle_store.trace_path.read_bytes()
     events = [json.loads(line) for line in raw.splitlines()]

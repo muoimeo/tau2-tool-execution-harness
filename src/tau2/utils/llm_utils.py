@@ -1,5 +1,6 @@
 import json
 import re
+from time import perf_counter
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -35,6 +36,15 @@ from tau2.harness.integration_contracts import (
     ParserFailureSidecar,
 )
 from tau2.harness.scoped_parser import parse_orchestrated_provider_tool_calls
+from tau2.harness.retry import (
+    ProviderFailureKind,
+    ProviderGenerationError,
+    ProviderGenerationRetryController,
+    ProviderInvocationResult,
+    canonical_provider_request_fingerprint,
+    classify_provider_exception,
+)
+from tau2.harness.model_response_inspector import summarize_assistant_output_structure
 
 # litellm._turn_on_debug()
 
@@ -190,6 +200,10 @@ def generate(
     tool_choice: Optional[str] = None,
     harness_context: OrchestratedHarnessContext | None = None,
     parser_failure_sidecar: ParserFailureSidecar | None = None,
+    provider_retry_controller: ProviderGenerationRetryController | None = None,
+    a3_repairer=None,
+    a3_recovery_audit=None,
+    a3_repair_lineage=None,
     **kwargs: Any,
 ) -> UserMessage | AssistantMessage:
     """
@@ -204,8 +218,18 @@ def generate(
 
     Returns: A tuple containing the message and the cost.
     """
-    if kwargs.get("num_retries") is None:
+    # Provider-only diagnostics deliberately avoid cost calculation and raw
+    # response retention. These flags are consumed here and never reach the
+    # gateway; normal A0/A1/A2 execution leaves both false.
+    diagnostic_skip_cost = bool(kwargs.pop("_diagnostic_skip_cost", False))
+    diagnostic_no_raw_data = bool(kwargs.pop("_diagnostic_no_raw_data", False))
+    diagnostic_skip_usage = bool(kwargs.pop("_diagnostic_skip_usage", False))
+    if provider_retry_controller is None and kwargs.get("num_retries") is None:
         kwargs["num_retries"] = DEFAULT_MAX_RETRIES
+    if provider_retry_controller is not None:
+        # A2 owns every retry decision.  This makes one controller attempt
+        # exactly one LiteLLM/OpenAI-compatible provider invocation.
+        kwargs["num_retries"] = 0
 
     if model.startswith("claude") and not ALLOW_SONNET_THINKING:
         kwargs["thinking"] = {"type": "disabled"}
@@ -213,41 +237,202 @@ def generate(
     tools = [tool.openai_schema for tool in tools] if tools else None
     if tools and tool_choice is None:
         tool_choice = "auto"
-    try:
-        response = completion(
-            model=model,
-            messages=litellm_messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            **kwargs,
+
+    def _field(value: Any, name: str, default: Any = None) -> Any:
+        """Read LiteLLM object-style and mapping-style response fields.
+
+        This helper is observational: it does not mutate a provider object or
+        normalize content/tool-call values. It exists so safe telemetry can
+        distinguish an absent message from an empty one.
+        """
+        if isinstance(value, dict):
+            return value.get(name, default)
+        return getattr(value, name, default)
+
+    def _response_shape(value: Any) -> dict[str, Any]:
+        choices = _field(value, "choices", None)
+        choices_count = len(choices) if isinstance(choices, (list, tuple)) else None
+        candidate = choices[0] if choices_count else None
+        message = _field(candidate, "message", None)
+        raw_tool_calls = _field(message, "tool_calls", None)
+        tool_call_count = (
+            None if message is None
+            else len(raw_tool_calls) if isinstance(raw_tool_calls, (list, tuple))
+            else 0 if raw_tool_calls is None
+            else None
         )
+        transport_request_id = _field(value, "_request_id", None)
+        completion_id = _field(value, "id", None)
+        id_source = (
+            "transport_request_id" if transport_request_id is not None
+            else "completion_id" if completion_id is not None
+            else None
+        )
+        return {
+            "response_type": type(value).__name__,
+            "choices_count": choices_count,
+            "message_present": message is not None,
+            "content": _field(message, "content", None),
+            "raw_tool_calls": raw_tool_calls,
+            "tool_call_count": tool_call_count,
+            "finish_reason": _field(candidate, "finish_reason", None),
+            "completion_id": completion_id,
+            "transport_request_id": transport_request_id,
+            "id_source": id_source,
+            # Backward-compatible alias. New analysis must use the explicit
+            # provenance fields above instead of assuming this is transport ID.
+            "request_id": transport_request_id or completion_id,
+            "candidate": candidate,
+            "message": message,
+        }
+    def _bucket(value: int | None) -> str | None:
+        if value is None:
+            return None
+        for limit, label in ((4096, "0-4k"), (16384, "4k-16k"), (65536, "16k-64k")):
+            if value < limit:
+                return label
+        return "64k+"
+
+    def _usage_metadata(value: Any) -> dict[str, int | None]:
+        usage = getattr(value, "usage", None)
+        if usage is None:
+            return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+        def read(*names):
+            for name in names:
+                item = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+                if isinstance(item, int):
+                    return item
+            return None
+        return {
+            "input_tokens": read("prompt_tokens", "input_tokens"),
+            "output_tokens": read("completion_tokens", "output_tokens"),
+            "total_tokens": read("total_tokens"),
+        }
+
+    request_size = len(json.dumps({"messages": litellm_messages, "tools": tools}, default=str).encode("utf-8"))
+    base_telemetry = {
+        "requested_model": model,
+        "message_count": len(litellm_messages),
+        "tool_schema_count": len(tools or []),
+        "request_size_bucket": _bucket(request_size),
+        "request_fingerprint_sha256": canonical_provider_request_fingerprint({
+            "model": model,
+            "messages": litellm_messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "generation_args": {
+                key: value for key, value in kwargs.items()
+                if key not in {"api_key", "api_base", "base_url", "headers", "extra_headers"}
+            },
+        }),
+    }
+
+    def one_provider_invocation():
+        timestamp_start = datetime.now(timezone.utc).isoformat()
+        started = perf_counter()
+        try:
+            value = completion(model=model, messages=litellm_messages, tools=tools, tool_choice=tool_choice, **kwargs)
+        except Exception as exc:
+            telemetry = {
+                **base_telemetry,
+                "latency_ms": round((perf_counter() - started) * 1000, 3),
+                "timestamp_start": timestamp_start,
+                "timestamp_end": datetime.now(timezone.utc).isoformat(),
+                "http_status": getattr(exc, "status_code", None),
+            }
+            classified = classify_provider_exception(exc, telemetry=telemetry)
+            if classified is not None:
+                raise classified from exc
+            raise
+        shape = _response_shape(value)
+        usage = _usage_metadata(value)
+        telemetry = {
+            **base_telemetry,
+            **usage,
+            "input_token_bucket": _bucket(usage["input_tokens"]),
+            "resolved_model": _field(value, "model", None),
+            "http_status": _field(value, "status_code", None),
+            "latency_ms": round((perf_counter() - started) * 1000, 3),
+            "timestamp_start": timestamp_start,
+            "timestamp_end": datetime.now(timezone.utc).isoformat(),
+            **{key: shape[key] for key in (
+                "response_type", "choices_count", "message_present", "tool_call_count",
+                "completion_id", "transport_request_id", "id_source", "request_id",
+                "finish_reason",
+            )},
+            "content_present": bool(shape["content"]),
+            "tool_calls_present": bool(shape["raw_tool_calls"] or []),
+        }
+        # This is deliberately before AssistantMessage construction/validation.
+        if (
+            shape["candidate"] is None
+            or shape["message"] is None
+            or (shape["content"] in (None, "") and not (shape["raw_tool_calls"] or []))
+        ):
+            # A2-only, read-only observability.  The response remains the
+            # source of truth for the existing empty-response decision; an
+            # inspector problem must never change classification or retry.
+            if provider_retry_controller is not None:
+                try:
+                    telemetry["empty_response_structure"] = (
+                        summarize_assistant_output_structure(value)
+                    )
+                except Exception as inspection_error:
+                    logger.warning(
+                        "A2 empty-response structural inspection failed: {}",
+                        type(inspection_error).__name__,
+                    )
+            # Diagnostic-only metadata for intermittent gateway/provider empty
+            # completions.  Do not retain prompt, content, tool arguments, or
+            # the raw provider response.
+            safe = {
+                **telemetry,
+            }
+            if provider_retry_controller is not None:
+                safe.update(provider_retry_controller.diagnostic_context)
+            logger.warning("A2 empty assistant response metadata: {}", safe)
+            raise ProviderGenerationError(
+                ProviderFailureKind.EMPTY_ASSISTANT_MESSAGE, telemetry=telemetry
+            )
+        if provider_retry_controller is not None:
+            return ProviderInvocationResult(value=value, telemetry=telemetry)
+        return value
+    try:
+        response = (provider_retry_controller.execute(one_provider_invocation).value
+                    if provider_retry_controller is not None else one_provider_invocation())
     except Exception as e:
         logger.error(e)
-        raise e
-    cost = get_response_cost(response)
-    usage = get_response_usage(response)
-    response = response.choices[0]
+        raise
+    cost = 0.0 if diagnostic_skip_cost else get_response_cost(response)
+    usage = None if diagnostic_skip_usage else get_response_usage(response)
+    response_shape = _response_shape(response)
+    response = response_shape["candidate"]
+    if response is None or response_shape["message"] is None:
+        # The provider invocation has already been classified before this
+        # point in normal operation. Keep a fail-closed guard for an exotic
+        # object that changes shape between inspection and materialization.
+        raise ValueError("provider response has no assistant choice/message")
     try:
-        finish_reason = response.finish_reason
+        finish_reason = response_shape["finish_reason"]
         if finish_reason == "length":
             logger.warning("Output might be incomplete due to token limit!")
     except Exception as e:
         logger.error(e)
         raise e
-    assert response.message.role == "assistant", (
+    assert _field(response_shape["message"], "role", None) == "assistant", (
         "The response should be an assistant message"
     )
-    content = response.message.content
-    raw_tool_calls = response.message.tool_calls or []
+    content = response_shape["content"]
+    raw_tool_calls = response_shape["raw_tool_calls"] or []
     if harness_context is None:
         if parser_failure_sidecar is not None:
             raise ValueError("parser_failure_sidecar requires harness_context")
         # Native path deliberately remains byte-for-byte equivalent in behavior.
         tool_calls = [
             ToolCall(
-                id=tool_call.id,
-                name=tool_call.function.name,
-                arguments=json.loads(tool_call.function.arguments),
+                id=_field(tool_call, "id", ""),
+                name=_field(_field(tool_call, "function", {}), "name", ""),
+                arguments=json.loads(_field(_field(tool_call, "function", {}), "arguments", "{}")),
             )
             for tool_call in raw_tool_calls
         ]
@@ -259,6 +444,9 @@ def generate(
             context=harness_context,
             sidecar=parser_failure_sidecar,
             parsed_at=datetime.now(timezone.utc),
+            repairer=a3_repairer,
+            recovery_audit=a3_recovery_audit,
+            repair_lineage=a3_repair_lineage,
         )
     tool_calls = tool_calls or None
 
@@ -268,7 +456,10 @@ def generate(
         tool_calls=tool_calls,
         cost=cost,
         usage=usage,
-        raw_data=response.to_dict(),
+        raw_data=(
+            None if diagnostic_no_raw_data
+            else (response if isinstance(response, dict) else response.to_dict())
+        ),
     )
     return message
 

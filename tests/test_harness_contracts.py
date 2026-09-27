@@ -12,6 +12,7 @@ from tau2.harness.contracts import (
     HarnessError,
     HarnessErrorCode,
     HarnessStage,
+    MaterializationOrigin,
     ParseStatus,
     RequestSourceKind,
     Requestor,
@@ -144,6 +145,7 @@ def test_request_validation_error_and_dispatch_invariants_are_model_enforced():
             dispatch_attempted=True,
             dispatch_count=1,
             status=DispatchStatus.NOT_DISPATCHED,
+            origin=MaterializationOrigin.HARNESS_REJECT,
             tool_message=ToolMessageRecord(
                 id=error_call.logical_call_id, requestor=Requestor.ASSISTANT,
                 content="error", error=True,

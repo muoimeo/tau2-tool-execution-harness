@@ -143,7 +143,7 @@ def test_allowed_read_and_write_execute_exactly_once_and_arguments_remain_unchan
 
 
 @pytest.mark.parametrize("exception", [ValueError("customer a@example.com #W1234567"), Exception("generic failure")])
-def test_native_exceptions_are_contained_once_with_safe_visible_content(exception):
+def test_sensitive_or_untyped_native_exceptions_are_contained_once_with_safe_visible_content(exception):
     calls = 0
 
     def broken_tool(**kwargs):
@@ -162,6 +162,20 @@ def test_native_exceptions_are_contained_once_with_safe_visible_content(exceptio
     assert result.tool_message.content == "Tool execution failed."
     assert "a@example.com" not in (result.harness_error.cause_message_redacted or "")
     assert "#W1234567" not in (result.harness_error.cause_message_redacted or "")
+
+
+def test_safe_native_value_error_preserves_native_environment_content_for_evaluator_replay():
+    def missing_user(**kwargs):
+        raise ValueError("User not found")
+
+    call = request(logical_call_id="missing-user")
+    result = A1ValidationExecutor(NativeToolExecutor(missing_user)).materialize(
+        call, allow_validation(call), resolved_tool(), completed_at=NOW
+    )
+    assert result.status.value == "native_error"
+    assert result.tool_message.error is True
+    assert result.tool_message.content == "Error: User not found"
+    assert result.harness_error.cause_message_redacted == "User not found"
 
 
 def test_duplicate_execution_guard_rejects_second_materialization_without_second_call():

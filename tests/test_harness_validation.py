@@ -116,7 +116,7 @@ def test_native_model_schema_and_openai_schema_are_not_mutated():
     assert native_tool.openai_schema == before_openai_schema
 
 
-def test_only_native_retail_domain_rule_is_same_item_pair_check():
+def test_argument_only_retail_domain_rules_reject_before_dispatch():
     result = validate("modify_pending_order_items", {
         "order_id": "#W0000000", "item_ids": ["old-1", "same", "old-3"],
         "new_item_ids": ["new-1", "same", "new-3"],
@@ -126,6 +126,26 @@ def test_only_native_retail_domain_rule_is_same_item_pair_check():
     assert result.failure_code == HarnessErrorCode.DOMAIN_CONSTRAINT_VIOLATION
     assert result.violations[0].path == "item_ids.1"
     assert result.violations[0].constraint_id == "retail.modify_pending_order_items.item_ids_ne_new_item_ids"
+
+    cases = [
+        ("calculate", {"expression": "1;2"}, "retail.calculate.allowed_expression_characters"),
+        ("cancel_pending_order", {"order_id": "#W0000000", "reason": "other"}, "retail.cancel_pending_order.reason_allowed"),
+        ("exchange_delivered_order_items", {
+            "order_id": "#W0000000", "item_ids": ["old"], "new_item_ids": ["new", "extra"],
+            "payment_method_id": "credit_card_0000000",
+        }, "retail.exchange_delivered_order_items.parallel_lists_same_length"),
+        ("modify_pending_order_items", {
+            "order_id": "#W0000000", "item_ids": ["old"], "new_item_ids": ["new", "extra"],
+            "payment_method_id": "credit_card_0000000",
+        }, "retail.modify_pending_order_items.parallel_lists_same_length"),
+    ]
+    for tool_name, arguments, constraint_id in cases:
+        result = validate(tool_name, arguments)
+        assert result.decision == ValidationDecision.REJECT
+        assert result.failed_stage == HarnessStage.DOMAIN_CONSTRAINT
+        assert result.failure_code == HarnessErrorCode.DOMAIN_CONSTRAINT_VIOLATION
+        assert result.violations[0].constraint_id == constraint_id
+        assert result.dispatch_count == 0
 
 
 def test_error_mapping_fallback_and_no_native_nested_fixture_claim():

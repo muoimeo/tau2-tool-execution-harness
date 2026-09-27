@@ -126,6 +126,46 @@ def test_registry_schema_and_domain_rejections_do_not_invoke_or_mutate(tmp_path,
     assert environment.tools.db == before
 
 
+def test_frozen_domain_reject_is_native_equivalent_but_never_dispatches_and_replays(tmp_path):
+    class NativeEquivalentToolkit(ToolKitBase):
+        def __init__(self):
+            super().__init__(db={"invocations": 0})
+
+        @is_tool(ToolType.WRITE)
+        def modify_pending_order_items(self, item_ids: list[str], new_item_ids: list[str]) -> str:
+            self.db["invocations"] += 1
+            if any(old == new for old, new in zip(item_ids, new_item_ids)):
+                raise ValueError("The new item id should be different from the old item id")
+            return "modified"
+
+    def make_environment():
+        return Environment(domain_name="test", policy="policy", tools=NativeEquivalentToolkit())
+
+    harness = EpisodeHarnessFactory(trace_root=tmp_path, environment_factory=make_environment).create(identity())
+    call = ToolCall(
+        id="same-item", name="modify_pending_order_items",
+        arguments={"item_ids": ["old"], "new_item_ids": ["old"]},
+    )
+    enabled = HarnessRuntimeBridge(harness).execute_assistant_call(call, context=context(harness))
+
+    assert enabled.error is True
+    assert enabled.content == "Error: The new item id should be different from the old item id"
+    assert harness.environment.tools.db["invocations"] == 0
+    import json
+    trace = [json.loads(line) for line in harness.lifecycle_store.trace_path.read_text(encoding="utf-8").splitlines()]
+    assert trace[-1]["origin"] == "harness_reject"
+    assert trace[-1]["dispatch_count"] == 0
+
+    replay_environment = make_environment()
+    replay_environment.set_state(
+        initialization_data=None,
+        initialization_actions=None,
+        message_history=[AssistantMessage(role="assistant", tool_calls=[call]), enabled],
+    )
+    # Replay dispatches natively; this asserts message compatibility only.
+    assert replay_environment.tools.db["invocations"] == 1
+
+
 def test_allow_read_write_native_exception_and_duplicate_guard(tmp_path):
     harness, environment = make_harness(tmp_path)
     bridge = HarnessRuntimeBridge(harness)
@@ -143,6 +183,27 @@ def test_allow_read_write_native_exception_and_duplicate_guard(tmp_path):
     with pytest.raises(DuplicateExecutionError):
         bridge.execute_assistant_call(ToolCall(id="write", name="increment", arguments={"amount": 3}), context=ctx)
     assert environment.tools.db["writes"] == 3
+
+
+def test_safe_native_domain_error_matches_native_environment_tool_message(tmp_path):
+    class MissingUserToolkit(ToolKitBase):
+        @is_tool(ToolType.READ)
+        def lookup_user(self, zip: str) -> str:
+            raise ValueError("User not found")
+
+    native_environment = Environment(domain_name="test", policy="policy", tools=MissingUserToolkit())
+    native = native_environment.get_response(
+        ToolCall(id="missing", name="lookup_user", arguments={"zip": "98178"})
+    )
+    harness = EpisodeHarnessFactory(
+        trace_root=tmp_path,
+        environment_factory=lambda: Environment(domain_name="test", policy="policy", tools=MissingUserToolkit()),
+    ).create(identity())
+    enabled = HarnessRuntimeBridge(harness).execute_assistant_call(
+        ToolCall(id="missing", name="lookup_user", arguments={"zip": "98178"}),
+        context=context(harness),
+    )
+    assert native == enabled
 
 
 def test_orchestrator_preserves_mixed_provider_order_and_never_falls_through_to_native_environment(tmp_path, monkeypatch):

@@ -49,3 +49,11 @@ ignore = ["E501", "F401", "F541"]
 
 [tool.ruff]
 line-length = 88
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "offline_deterministic: local deterministic test; provider/network calls are blocked",
+    "live_gateway: requires a live model provider or gateway",
+    "environment_dependent: requires credentials, a service, or machine-specific environment",
+]

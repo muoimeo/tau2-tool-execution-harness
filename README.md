@@ -1,3 +1,30 @@
+# Tool Execution Harness for tau2-bench
+
+This repository extends Sierra's tau2-bench with an opt-in execution harness for
+Retail tool calls. The original benchmark runs with the harness disabled (A0).
+A1 adds pre-dispatch validation and an audit trace; A2 adds bounded provider
+retry; A3 adds narrow JSON representation repair and checks tool output and
+selected Retail WRITE postconditions. Fault-injection experiments exercise these
+boundaries using a local scripted OpenAI-compatible server.
+
+The project compares **execution behavior**, not model quality. Benchmark
+reward, evaluator, Retail task data, and native Retail tool implementations
+remain the benchmark's. Full live runs require access to the configured model
+gateway; the offline test suite does not.
+
+Start with [Reproducing the harness experiments](docs/REPRODUCIBILITY.md) for
+setup, frozen task IDs and seeds, A0-A3 commands, artifact locations, and
+offline fault injection. See [harness layout](src/tau2/harness/README.md) for
+the code map and [metric definitions](analysis/METRIC_CATALOG_A0_A3_HOW_TO_CALCULATE.md)
+for result denominators. Generated `data/simulations/` artifacts are ignored by
+Git and are not included in this repository; the documented commands produce
+new artifacts in a clean checkout.
+
+This is a research extension of [Sierra's tau2-bench](https://github.com/sierra-research/tau2-bench).
+The upstream README follows below.
+
+---
+
 # $\tau^2$-Bench: Evaluating Conversational Agents in a Dual-Control Environment
 
 [![python](https://img.shields.io/badge/Python-3.10%2B-blue.svg?style=flat&logo=python&logoColor=white)](https://www.python.org)

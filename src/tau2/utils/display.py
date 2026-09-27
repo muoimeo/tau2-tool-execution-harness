@@ -1,6 +1,8 @@
 import json
+import sys
 from typing import List, Optional
 
+from loguru import logger
 from rich.console import Console
 from rich.layout import Layout
 from rich.panel import Panel
@@ -23,7 +25,99 @@ class ConsoleDisplay:
     console = Console()
 
     @classmethod
+    def _output_encoding(cls) -> str | None:
+        stream = getattr(cls.console, "file", None)
+        return getattr(stream, "encoding", None) or getattr(sys.stdout, "encoding", None)
+
+    @classmethod
+    def unicode_output_supported(cls) -> bool:
+        """Use Rich Unicode only when the active stream is truly UTF-8."""
+        encoding = cls._output_encoding()
+        if not encoding or encoding.lower().replace("-", "") not in {"utf8", "utf_8"}:
+            return False
+        try:
+            "┌─✅".encode(encoding)
+            return True
+        except (LookupError, UnicodeEncodeError):
+            return False
+
+    @staticmethod
+    def _ascii_box(title: str, rows: list[str]) -> str:
+        clean = [str(row).encode("ascii", "replace").decode("ascii") for row in rows]
+        safe_title = title.encode("ascii", "replace").decode("ascii")
+        width = max([len(safe_title), *(len(row) for row in clean)])
+        border = "+" + "-" * (width + 2) + "+"
+        return "\n".join([border, f"| {safe_title.ljust(width)} |", border, *[f"| {row.ljust(width)} |" for row in clean], border])
+
+    @classmethod
+    def _print_ascii(cls, text: str) -> bool:
+        try:
+            cls.console.print(text.encode("ascii", "replace").decode("ascii"), markup=False, emoji=False)
+            return True
+        except (UnicodeEncodeError, OSError) as exc:
+            logger.warning(f"ASCII console fallback failed: {type(exc).__name__}")
+            return False
+
+    @classmethod
+    def safe_print(cls, *args, **kwargs) -> bool:
+        """Best-effort console output that cannot invalidate a benchmark run."""
+        if not cls.unicode_output_supported():
+            text = " ".join(value.plain if isinstance(value, Text) else str(value) for value in args)
+            return cls._print_ascii(text.replace("✅", "[PASS]").replace("❌", "[FAIL]").replace("✨", "[PASS]"))
+        try:
+            cls.console.print(*args, **kwargs)
+            return True
+        except (UnicodeEncodeError, OSError) as exc:
+            logger.warning(
+                "Non-critical console output failed; benchmark execution remains valid: "
+                f"{type(exc).__name__}"
+            )
+            try:
+                cls.console.print(
+                    "WARNING: console output unavailable (ASCII fallback).",
+                    markup=False,
+                    emoji=False,
+                )
+            except (UnicodeEncodeError, OSError):
+                logger.warning("ASCII console fallback also failed; suppressing display only")
+            return False
+
+    @classmethod
+    def display_simulation_best_effort(
+        cls, simulation: SimulationRun, show_details: bool = True
+    ) -> bool:
+        """Render a completed simulation without making display part of correctness."""
+        try:
+            cls.display_simulation(simulation, show_details=show_details)
+            return True
+        except (UnicodeEncodeError, OSError) as exc:
+            logger.warning(
+                "Non-critical simulation display failed; result/lifecycle were retained: "
+                f"{type(exc).__name__}"
+            )
+            cls.safe_print(
+                "WARNING: simulation display unavailable (ASCII fallback).",
+                markup=False,
+                emoji=False,
+            )
+            return False
+
+    @classmethod
     def display_run_config(cls, config: RunConfig):
+        if not cls.unicode_output_supported():
+            cls._print_ascii(cls._ascii_box("Simulation Configuration", [
+                f"Domain: {config.domain}",
+                f"Task Set: {config.task_set_name if config.task_set_name else 'Default'}",
+                f"Task IDs: {', '.join(map(str, config.task_ids)) if config.task_ids else 'All'}",
+                f"Number of trials: {config.num_trials}",
+                f"Max steps: {config.max_steps}",
+                f"Max errors: {config.max_errors}",
+                f"Agent: {config.agent} ({config.llm_agent})",
+                f"User: {config.user} ({config.llm_user})",
+                f"Save To: {config.save_to or 'Not specified'}",
+                f"Max Concurrency: {config.max_concurrency}",
+            ]))
+            return
         # Create layout
         layout = Layout()
 
@@ -85,6 +179,13 @@ class ConsoleDisplay:
 
     @classmethod
     def display_task(cls, task: Task):
+        if not cls.unicode_output_supported():
+            instructions = getattr(getattr(task, "user_scenario", None), "instructions", "")
+            cls._print_ascii(cls._ascii_box("Task Details", [
+                f"ID: {task.id}",
+                f"Task Instructions: {instructions}",
+            ]))
+            return
         # Build content string showing only non-None fields
         content_parts = []
 
@@ -175,6 +276,12 @@ class ConsoleDisplay:
             simulation: The simulation object to display
             show_details: Whether to show detailed information
         """
+        if not cls.unicode_output_supported():
+            cls._display_simulation_ascii(simulation, show_details)
+            return
+        cls._display_simulation_rich(simulation, show_details)
+        return
+
         # Create main simulation info panel
         sim_info = Text()
         if show_details:
@@ -332,7 +439,96 @@ class ConsoleDisplay:
                 cls.console.print(table)
 
     @classmethod
+    def _display_simulation_ascii(cls, simulation: SimulationRun, show_details: bool) -> bool:
+        rows = []
+        if show_details:
+            rows.append(f"Simulation ID: {simulation.id}")
+        rows.extend([
+            f"Task ID: {simulation.task_id}",
+            f"Trial: {simulation.trial}",
+            f"Duration: {simulation.duration:.2f}s",
+            f"Termination Reason: {simulation.termination_reason}",
+        ])
+        if simulation.agent_cost is not None:
+            rows.append(f"Agent Cost: ${simulation.agent_cost:.4f}")
+        if simulation.user_cost is not None:
+            rows.append(f"User Cost: ${simulation.user_cost:.4f}")
+        reward = simulation.reward_info
+        if reward:
+            marker = "[PASS]" if is_successful(reward.reward) else "[FAIL]"
+            breakdown = sorted(
+                f"{getattr(key, 'value', key)}: {value:.1f}"
+                for key, value in reward.reward_breakdown.items()
+            ) if reward.reward_breakdown else []
+            rows.append(f"Reward: {marker} {reward.reward:.4f} ({', '.join(breakdown)})")
+            if reward.db_check:
+                marker = "[PASS]" if reward.db_check.db_match else "[FAIL]"
+                rows.append(f"DB Check: {marker} {reward.db_check.db_reward}")
+            if reward.communicate_checks:
+                rows.append("Communicate Checks:")
+                for index, check in enumerate(reward.communicate_checks):
+                    marker = "[PASS]" if check.met else "[FAIL]"
+                    rows.append(f"- {index}: {check.info} {marker}")
+        return cls._print_ascii(cls._ascii_box("Simulation Overview", rows))
+
+    @classmethod
+    def _display_simulation_rich(cls, simulation: SimulationRun, show_details: bool) -> None:
+        """Small Rich rendering path with UTF-8 status markers only."""
+        lines = []
+        if show_details:
+            lines.append(f"Simulation ID: {simulation.id}")
+        lines.extend([
+            f"Task ID: {simulation.task_id}",
+            f"Trial: {simulation.trial}",
+            f"Duration: {simulation.duration:.2f}s",
+            f"Termination Reason: {simulation.termination_reason}",
+        ])
+        if simulation.agent_cost is not None:
+            lines.append(f"Agent Cost: ${simulation.agent_cost:.4f}")
+        if simulation.user_cost is not None:
+            lines.append(f"User Cost: ${simulation.user_cost:.4f}")
+        reward = simulation.reward_info
+        if reward:
+            marker = "✅" if is_successful(reward.reward) else "❌"
+            breakdown = sorted(
+                f"{getattr(key, 'value', key)}: {value:.1f}"
+                for key, value in reward.reward_breakdown.items()
+            ) if reward.reward_breakdown else []
+            lines.append(f"Reward: {marker} {reward.reward:.4f} ({', '.join(breakdown)})")
+            if reward.db_check:
+                marker = "✅" if reward.db_check.db_match else "❌"
+                lines.append(f"DB Check: {marker} {reward.db_check.db_reward}")
+            if reward.communicate_checks:
+                lines.append("Communicate Checks:")
+                for index, check in enumerate(reward.communicate_checks):
+                    marker = "✅" if check.met else "❌"
+                    lines.append(f"- {index}: {check.info} {marker}")
+        cls.console.print(Panel("\n".join(lines), title="Simulation Overview", border_style="blue"))
+        if show_details and simulation.messages:
+            table = Table(title="Messages", show_header=True, show_lines=True)
+            table.add_column("Role")
+            table.add_column("Content")
+            table.add_column("Turn")
+            for message in simulation.messages:
+                table.add_row(message.role, message.content or "", str(message.turn_idx or ""))
+            cls.console.print(table)
+
+    @classmethod
+    def _display_agent_metrics_ascii(cls, metrics: AgentMetrics) -> bool:
+        rows = [f"Average Reward: {metrics.avg_reward:.4f}"]
+        rows.extend(f"Pass^{key}: {value:.3f}" for key, value in metrics.pass_hat_ks.items())
+        rows.append(f"Average Cost per Conversation: ${metrics.avg_agent_cost:.4f}")
+        return cls._print_ascii(cls._ascii_box("Agent Metrics", rows))
+
+    @classmethod
     def display_agent_metrics(cls, metrics: AgentMetrics):
+        if not cls.unicode_output_supported():
+            cls._display_agent_metrics_ascii(metrics)
+            return
+        cls._display_agent_metrics_rich(metrics)
+
+    @classmethod
+    def _display_agent_metrics_rich(cls, metrics: AgentMetrics):
         # Create content for metrics panel
         content = Text()
 
